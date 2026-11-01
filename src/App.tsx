@@ -82,6 +82,24 @@ const QWERTY_TO_ARABIC: Record<string, string> = {
   z: 'ذ', x: 'ء', c: 'ؤ', v: 'ر', b: 'ل', n: 'ى', m: 'ة', ',': 'و', '.': 'ز', '/': 'ظ', ']': 'د', ' ': ' '
 };
 
+// Cross-platform haptic feedback (works in browser and native Android APK via AndroidBridge)
+const triggerHaptic = (type: 'tap' | 'complete' | 'error') => {
+  try {
+    const bridge = (window as unknown as { AndroidBridge?: { vibrate: (ms: number) => void } })?.AndroidBridge;
+    if (bridge && typeof bridge.vibrate === 'function') {
+      if (type === 'tap') bridge.vibrate(25);
+      else if (type === 'complete') bridge.vibrate(45);
+      else if (type === 'error') bridge.vibrate(90);
+    } else if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      if (type === 'tap') navigator.vibrate(25);
+      else if (type === 'complete') navigator.vibrate(45);
+      else if (type === 'error') navigator.vibrate(90);
+    }
+  } catch {
+    // Ignore haptic errors if unsupported
+  }
+};
+
 interface MovingEntity {
   id: string;
   fullText: string;
@@ -342,6 +360,7 @@ export default function App() {
 
       if (nextRemaining.length === 0) {
         // Complete word/sentence/letter typed -> Pop & disappear!
+        triggerHaptic('complete');
         const remainingEntities = currentEntities.filter(e => e.id !== target.id);
         entitiesRef.current = remainingEntities;
         setEntities(remainingEntities);
@@ -368,6 +387,7 @@ export default function App() {
         }
       } else {
         // Advance expected character inside word/sentence
+        triggerHaptic('tap');
         const updated = currentEntities.map(e => {
           if (e.id === target.id) {
             return {
@@ -384,6 +404,7 @@ export default function App() {
       }
     } else {
       // Incorrect keypress -> Shake / red flash, item remains, pointer does not advance
+      triggerHaptic('error');
       setErrorFlash(true);
       setTimeout(() => setErrorFlash(false), 240);
     }
@@ -400,6 +421,7 @@ export default function App() {
 
     if (!target || target.typedText.length === 0) return;
 
+    triggerHaptic('tap');
     const lastChar = target.typedText[target.typedText.length - 1];
     const newTyped = target.typedText.slice(0, -1);
     const newRemaining = lastChar + target.remainingText;

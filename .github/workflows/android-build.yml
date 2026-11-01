@@ -37,6 +37,17 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Web Dependencies
+        run: npm install
+
+      - name: Build Web Game and Bundle into Android Assets
+        run: npm run build:android
+
       - name: Build Debug APK with Gradle
         run: gradle assembleDebug --stacktrace
 
