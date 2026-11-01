@@ -79,5 +79,8 @@ dependencies {
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
 
+    // AndroidX WebKit for secure WebViewAssetLoader
+    implementation(libs.androidx.webkit)
+
     debugImplementation(libs.androidx.ui.tooling)
 }
