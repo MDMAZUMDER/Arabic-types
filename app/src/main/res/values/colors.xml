@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Approved Design Tokens from TOKENS.md -->
+    <color name="brand_primary">#183B4E</color>
+    <color name="brand_secondary">#168C83</color>
+    <color name="surface_base">#F6F7F5</color>
+    <color name="surface_card">#FFFFFF</color>
+    <color name="text_primary">#17252D</color>
+    <color name="text_secondary">#64727A</color>
+    <color name="feedback_success">#23865B</color>
+    <color name="feedback_error">#C44747</color>
+    <color name="feedback_hint">#D69A32</color>
+    <color name="border_subtle">#E2E8E7</color>
+</resources>

@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">تعلم الطباعة العربية (Arabic Typing)</string>
+    <string name="title_guided_mode">Guided Mode (الوضع الإرشادي)</string>
+    <string name="title_hint_mode">Hint Mode (وضع التلميح)</string>
+    <string name="title_test_mode">Test Mode (وضع الاختبار)</string>
+</resources>

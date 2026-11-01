@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "Arabic Typing Learning App",
+  "description": "Complete offline native Android typing learning application built with Kotlin, Jetpack Compose, Room, DataStore, and Material 3.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
