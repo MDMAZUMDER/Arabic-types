@@ -5,56 +5,19 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
-// The 28 basic Arabic letters + additional common forms
-const ARABIC_ALPHABET = [
-  'ا', 'ب', 'ت', 'ث', 'ج', 'ح', 'خ', 'د', 'ذ', 'ر',
-  'ز', 'س', 'ش', 'ص', 'ض', 'ط', 'ظ', 'ع', 'غ', 'ف',
-  'ق', 'ك', 'ل', 'م', 'ن', 'ه', 'و', 'ي', 'ة', 'ى',
-  'ء', 'ئ', 'ؤ'
-];
-
-// Tier 2: Very Short Words (2-3 letters)
-const TIER2_VERY_SHORT_WORDS = [
-  'يد', 'أب', 'أم', 'دم', 'فم', 'أخ', 'هو', 'هي', 'قل', 'عد',
-  'كتب', 'درس', 'علم', 'نور', 'قلم', 'شمس', 'بيت', 'ورد', 'قمر', 'بحر'
-];
-
-// Tier 3: Short Words (4-5 letters)
-const TIER3_SHORT_WORDS = [
-  'كتاب', 'سماء', 'طريق', 'مدينة', 'معلم', 'حياة', 'أزهار', 'حديقة',
-  'مدرسة', 'تفاح', 'طبيعة', 'جميل', 'صباح', 'مساء', 'سلام', 'وطن'
-];
-
-// Tier 4: Medium Words (6-8 letters)
-const TIER4_MEDIUM_WORDS = [
-  'المستقبل', 'الاستمرار', 'المعرفة', 'التدريب', 'المتفوق', 'المعلمون',
-  'الجامعة', 'المكتبة', 'الكتابة', 'الحدائق', 'المعلومات', 'التكنولوجيا'
-];
-
-// Tier 5: Long Words (9+ letters)
-const TIER5_LONG_WORDS = [
-  'المتفوقين', 'المسؤوليات', 'الاستكشافات', 'المستودعات', 'الاستراتيجية',
-  'المواصلات', 'المستشفيات', 'الديمقراطية', 'الاستعدادات', 'المستلزمات'
-];
-
-// Tier 6: Short Sentences
-const TIER6_SHORT_SENTENCES = [
-  'العلم نور',
-  'الوقت كالسيف',
-  'الصبر مفتاح الفرج',
-  'العمل شرف',
-  'الصدق منجاة',
-  'النظافة من الإيمان'
-];
-
-// Tier 7: Long Sentences
-const TIER7_LONG_SENTENCES = [
-  'من طلب العلا سهر الليالي',
-  'التدريب المستمر طريق النجاح والإتقان',
-  'لغتنا العربية لغة البيان والبلاغة',
-  'خير جليس في الزمان كتاب',
-  'في التأني السلامة وفي العجلة الندامة'
-];
+import {
+  ARABIC_ALPHABET,
+  TIER2_VERY_SHORT_WORDS,
+  TIER3_SHORT_WORDS,
+  TIER4_MEDIUM_WORDS,
+  TIER5_LONG_WORDS,
+  TIER6_SHORT_SENTENCES,
+  TIER7_LONG_SENTENCES,
+  REQUIRED_LETTER_HITS,
+  StageProgress,
+  INITIAL_STAGE_PROGRESS,
+  computeProgressionTier
+} from './progressionLogic';
 
 // Gboard Numbers Row from user screenshot
 const GBOARD_NUMBERS = ['١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩', '٠'];
@@ -127,6 +90,7 @@ interface MovingEntity {
   x: number; // percentage from left (100 is right, 0 is danger left)
   lane: number; // 0 to 3
   isSentence: boolean;
+  tier: number;
 }
 
 export default function App() {
@@ -136,7 +100,7 @@ export default function App() {
   const [errorFlash, setErrorFlash] = useState(false);
   const [pressedKey, setPressedKey] = useState<string | null>(null);
 
-  // Local storage learner mastery counts
+  // Local storage learner mastery counts (each letter must reach 20, capped at 20)
   const [letterCounts, setLetterCounts] = useState<Record<string, number>>(() => {
     try {
       const saved = localStorage.getItem('arabic_endless_letter_counts');
@@ -146,13 +110,17 @@ export default function App() {
     }
   });
 
-  const [wordsCompleted, setWordsCompleted] = useState<number>(() => {
+  // Local storage distinct stage progress (each tier tracked independently)
+  const [stageProgress, setStageProgress] = useState<StageProgress>(() => {
     try {
-      const saved = localStorage.getItem('arabic_endless_words_completed');
-      return saved ? parseInt(saved, 10) : 0;
+      const saved = localStorage.getItem('arabic_endless_stage_progress');
+      if (saved) {
+        return { ...INITIAL_STAGE_PROGRESS, ...JSON.parse(saved) };
+      }
     } catch {
-      return 0;
+      // fallback
     }
+    return INITIAL_STAGE_PROGRESS;
   });
 
   const entitiesRef = useRef<MovingEntity[]>([]);
@@ -170,34 +138,20 @@ export default function App() {
     gameStateRef.current = gameState;
   }, [gameState]);
 
-  // Save progress locally
+  // Save progress locally (persisted across reloads and game over)
   useEffect(() => {
     try {
       localStorage.setItem('arabic_endless_letter_counts', JSON.stringify(letterCounts));
-      localStorage.setItem('arabic_endless_words_completed', wordsCompleted.toString());
+      localStorage.setItem('arabic_endless_stage_progress', JSON.stringify(stageProgress));
     } catch {
       // LocalStorage access handling
     }
-  }, [letterCounts, wordsCompleted]);
+  }, [letterCounts, stageProgress]);
 
   // Determine current progression tier automatically
   const getProgressionTier = useCallback(() => {
-    // Stage 1 Check: Have all 28 basic Arabic letters been typed at least 20 times?
-    const basicLetters = ARABIC_ALPHABET.slice(0, 28);
-    const allBasicMastered = basicLetters.every(char => (letterCounts[char] || 0) >= 20);
-
-    if (!allBasicMastered) {
-      return 1; // Tier 1: Individual Letters
-    }
-
-    // Subsequent tiers based on cumulative successful completions
-    if (wordsCompleted < 30) return 2; // Very Short Words
-    if (wordsCompleted < 65) return 3; // Short Words
-    if (wordsCompleted < 105) return 4; // Medium Words
-    if (wordsCompleted < 145) return 5; // Long Words
-    if (wordsCompleted < 190) return 6; // Short Sentences
-    return 7; // Long Sentences
-  }, [letterCounts, wordsCompleted]);
+    return computeProgressionTier(letterCounts, stageProgress);
+  }, [letterCounts, stageProgress]);
 
   // Spawn new content based on current progression tier
   const spawnNextEntity = useCallback((tier: number, initialX: number = 100, specificLane?: number) => {
@@ -207,7 +161,7 @@ export default function App() {
 
     if (tier === 1) {
       // Pick random letter, prioritizing letters with < 20 correct hits
-      const unmastered = ARABIC_ALPHABET.filter(c => (letterCounts[c] || 0) < 20);
+      const unmastered = ARABIC_ALPHABET.filter(c => (letterCounts[c] || 0) < REQUIRED_LETTER_HITS);
       const candidates = unmastered.length > 0 ? unmastered : ARABIC_ALPHABET;
       chosenText = candidates[Math.floor(Math.random() * candidates.length)];
     } else if (tier === 2) {
@@ -254,7 +208,8 @@ export default function App() {
       typedText: '',
       x: initialX,
       lane: chosenLane % 4,
-      isSentence
+      isSentence,
+      tier
     };
 
     return newEntity;
@@ -377,11 +332,11 @@ export default function App() {
       const nextRemaining = target.remainingText.slice(1);
       const nextTyped = target.typedText + expectedChar;
 
-      // Update letter mastery count if single letter
+      // Update letter mastery count if single letter (capped at REQUIRED_LETTER_HITS = 20)
       if (target.fullText.length === 1) {
         setLetterCounts(prev => ({
           ...prev,
-          [expectedChar]: (prev[expectedChar] || 0) + 1
+          [expectedChar]: Math.min(REQUIRED_LETTER_HITS, (prev[expectedChar] || 0) + 1)
         }));
       }
 
@@ -391,7 +346,21 @@ export default function App() {
         entitiesRef.current = remainingEntities;
         setEntities(remainingEntities);
         updateTargetAndHighlight(remainingEntities);
-        setWordsCompleted(prev => prev + 1);
+
+        // Update progress strictly for this entity's specific stage
+        if (target.tier === 2) {
+          setStageProgress(prev => ({ ...prev, tier2Words: prev.tier2Words + 1 }));
+        } else if (target.tier === 3) {
+          setStageProgress(prev => ({ ...prev, tier3Words: prev.tier3Words + 1 }));
+        } else if (target.tier === 4) {
+          setStageProgress(prev => ({ ...prev, tier4Words: prev.tier4Words + 1 }));
+        } else if (target.tier === 5) {
+          setStageProgress(prev => ({ ...prev, tier5Words: prev.tier5Words + 1 }));
+        } else if (target.tier === 6) {
+          setStageProgress(prev => ({ ...prev, tier6Sentences: prev.tier6Sentences + 1 }));
+        } else if (target.tier === 7) {
+          setStageProgress(prev => ({ ...prev, tier7Sentences: prev.tier7Sentences + 1 }));
+        }
 
         // If few entities remain, speed up next spawn immediately so screen is never empty
         if (remainingEntities.length <= 1) {
