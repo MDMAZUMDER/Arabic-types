@@ -3,395 +3,786 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { 
-  FolderTree, 
-  Layers, 
-  Database, 
-  Terminal, 
-  CheckCircle2, 
-  FileCode2, 
-  BookOpen, 
-  Sparkles, 
-  ShieldCheck, 
-  Smartphone,
-  ChevronRight,
-  ExternalLink
-} from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+
+// The 28 basic Arabic letters + additional common forms
+const ARABIC_ALPHABET = [
+  'ا', 'ب', 'ت', 'ث', 'ج', 'ح', 'خ', 'د', 'ذ', 'ر',
+  'ز', 'س', 'ش', 'ص', 'ض', 'ط', 'ظ', 'ع', 'غ', 'ف',
+  'ق', 'ك', 'ل', 'م', 'ن', 'ه', 'و', 'ي', 'ة', 'ى',
+  'ء', 'ئ', 'ؤ'
+];
+
+// Tier 2: Very Short Words (2-3 letters)
+const TIER2_VERY_SHORT_WORDS = [
+  'يد', 'أب', 'أم', 'دم', 'فم', 'أخ', 'هو', 'هي', 'قل', 'عد',
+  'كتب', 'درس', 'علم', 'نور', 'قلم', 'شمس', 'بيت', 'ورد', 'قمر', 'بحر'
+];
+
+// Tier 3: Short Words (4-5 letters)
+const TIER3_SHORT_WORDS = [
+  'كتاب', 'سماء', 'طريق', 'مدينة', 'معلم', 'حياة', 'أزهار', 'حديقة',
+  'مدرسة', 'تفاح', 'طبيعة', 'جميل', 'صباح', 'مساء', 'سلام', 'وطن'
+];
+
+// Tier 4: Medium Words (6-8 letters)
+const TIER4_MEDIUM_WORDS = [
+  'المستقبل', 'الاستمرار', 'المعرفة', 'التدريب', 'المتفوق', 'المعلمون',
+  'الجامعة', 'المكتبة', 'الكتابة', 'الحدائق', 'المعلومات', 'التكنولوجيا'
+];
+
+// Tier 5: Long Words (9+ letters)
+const TIER5_LONG_WORDS = [
+  'المتفوقين', 'المسؤوليات', 'الاستكشافات', 'المستودعات', 'الاستراتيجية',
+  'المواصلات', 'المستشفيات', 'الديمقراطية', 'الاستعدادات', 'المستلزمات'
+];
+
+// Tier 6: Short Sentences
+const TIER6_SHORT_SENTENCES = [
+  'العلم نور',
+  'الوقت كالسيف',
+  'الصبر مفتاح الفرج',
+  'العمل شرف',
+  'الصدق منجاة',
+  'النظافة من الإيمان'
+];
+
+// Tier 7: Long Sentences
+const TIER7_LONG_SENTENCES = [
+  'من طلب العلا سهر الليالي',
+  'التدريب المستمر طريق النجاح والإتقان',
+  'لغتنا العربية لغة البيان والبلاغة',
+  'خير جليس في الزمان كتاب',
+  'في التأني السلامة وفي العجلة الندامة'
+];
+
+// Gboard Numbers Row from user screenshot
+const GBOARD_NUMBERS = ['١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩', '٠'];
+
+// Gboard Row 1: Exactly 11 keys with exact secondary hints from screenshot
+const GBOARD_ROW_1 = [
+  { char: 'ض', hint: '%' },
+  { char: 'ص', hint: '\\' },
+  { char: 'ث', hint: '|' },
+  { char: 'ق', hint: '=' },
+  { char: 'ف', hint: '[' },
+  { char: 'غ', hint: ']' },
+  { char: 'ع', hint: '<' },
+  { char: 'ه', hint: '>' },
+  { char: 'خ', hint: '{' },
+  { char: 'ح', hint: '}' },
+  { char: 'ج', hint: '°' }
+];
+
+// Gboard Row 2: Exactly 11 keys with exact secondary hints from screenshot
+const GBOARD_ROW_2 = [
+  { char: 'ش', hint: '@' },
+  { char: 'س', hint: '#' },
+  { char: 'ي', hint: '$' },
+  { char: 'ب', hint: '_' },
+  { char: 'ل', hint: '&' },
+  { char: 'ا', hint: '-' },
+  { char: 'ت', hint: '+' },
+  { char: 'ن', hint: '(' },
+  { char: 'م', hint: ')' },
+  { char: 'ك', hint: '/' },
+  { char: 'ط', hint: '~' }
+];
+
+// Gboard Row 3: Exactly 10 letter keys with exact secondary hints from screenshot
+// Sequence: ذ, ء, ؤ, ر, ى, ة, و, ز, ظ, د
+const GBOARD_ROW_3 = [
+  { char: 'ذ', hint: '`' },
+  { char: 'ء', hint: '*' },
+  { char: 'ؤ', hint: '"' },
+  { char: 'ر', hint: '\'' },
+  { char: 'ى', hint: ':' },
+  { char: 'ة', hint: ';' },
+  { char: 'و', hint: '!' },
+  { char: 'ز', hint: '?' },
+  { char: 'ظ', hint: '\\' },
+  { char: 'د', hint: '%' }
+];
+
+// Normalize Arabic letters so pressing 'ا' matches 'أ', 'إ', 'آ', and 'ي' / 'ء' matches 'ئ'
+const normalizeArabic = (c: string): string => {
+  if (c === 'أ' || c === 'إ' || c === 'آ' || c === 'ٱ') return 'ا';
+  if (c === 'ئ') return 'ي';
+  return c;
+};
+
+// Physical English keyboard to Arabic standard mapping matching screenshot
+const QWERTY_TO_ARABIC: Record<string, string> = {
+  '`': 'ذ', '~': 'ذ',
+  q: 'ض', w: 'ص', e: 'ث', r: 'ق', t: 'ف', y: 'غ', u: 'ع', i: 'ه', o: 'خ', p: 'ح', '[': 'ج',
+  a: 'ش', s: 'س', d: 'ي', f: 'ب', g: 'ل', h: 'ا', j: 'ت', k: 'ن', l: 'م', ';': 'ك', '\'': 'ط',
+  z: 'ذ', x: 'ء', c: 'ؤ', v: 'ر', b: 'ل', n: 'ى', m: 'ة', ',': 'و', '.': 'ز', '/': 'ظ', ']': 'د', ' ': ' '
+};
+
+interface MovingEntity {
+  id: string;
+  fullText: string;
+  remainingText: string;
+  typedText: string;
+  x: number; // percentage from left (100 is right, 0 is danger left)
+  lane: number; // 0 to 3
+  isSentence: boolean;
+}
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'structure' | 'architecture' | 'commands'>('overview');
+  const [gameState, setGameState] = useState<'START' | 'PLAYING' | 'GAME_OVER'>('START');
+  const [entities, setEntities] = useState<MovingEntity[]>([]);
+  const [activeHighlightKey, setActiveHighlightKey] = useState<string | null>(null);
+  const [errorFlash, setErrorFlash] = useState(false);
+  const [pressedKey, setPressedKey] = useState<string | null>(null);
 
-  const androidFiles = [
-    { category: 'Gradle & Build Configuration', files: [
-      { path: 'settings.gradle.kts', desc: 'Plugin management, repositories & root project definition' },
-      { path: 'build.gradle.kts', desc: 'Root buildscript with Kotlin 2.0 & AGP 8.7' },
-      { path: 'gradle.properties', desc: 'AndroidX, JVM tuning, nonTransitiveRClass' },
-      { path: 'gradle/libs.versions.toml', desc: 'Version catalog (Compose BOM, Room, DataStore, Navigation)' },
-      { path: 'gradle/wrapper/gradle-wrapper.properties', desc: 'Gradle 8.11 wrapper configuration' },
-      { path: 'app/build.gradle.kts', desc: 'Application module configuration & dependencies' },
-      { path: 'app/proguard-rules.pro', desc: 'ProGuard / R8 keep rules for Room entities and models' },
-      { path: '.github/workflows/android-build.yml', desc: 'GitHub Actions workflow to build and upload debug APK in the cloud' }
-    ]},
-    { category: 'Android Manifest & Resources', files: [
-      { path: 'app/src/main/AndroidManifest.xml', desc: 'App declaration, RTL support, Launcher activity' },
-      { path: 'app/src/main/res/values/strings.xml', desc: 'App and mode localized string resources' },
-      { path: 'app/src/main/res/values/colors.xml', desc: 'Approved color tokens from 03._TOKENS.md' },
-      { path: 'app/src/main/res/values/themes.xml', desc: 'Material 3 NoActionBar theme' }
-    ]},
-    { category: 'Domain Layer (Typing Engine & States)', files: [
-      { path: 'app/src/main/java/com/arabictyping/app/domain/model/Mode.kt', desc: 'GUIDED, HINT, TEST learning modes' },
-      { path: 'app/src/main/java/com/arabictyping/app/domain/model/StageType.kt', desc: '7 curriculum stage types' },
-      { path: 'app/src/main/java/com/arabictyping/app/domain/model/ContentType.kt', desc: 'LETTER, COMBINATION, WORD, SENTENCE' },
-      { path: 'app/src/main/java/com/arabictyping/app/domain/model/TypingState.kt', desc: 'State machine states from 02._STATE.md' },
-      { path: 'app/src/main/java/com/arabictyping/app/domain/model/ReportData.kt', desc: 'Accuracy %, CPM, error metrics per SCHEMA.md' },
-      { path: 'app/src/main/java/com/arabictyping/app/domain/engine/TypingEngine.kt', desc: 'Stateful typing engine, pointer, key highlight' }
-    ]},
-    { category: 'Data Layer (Room Database, DataStore & Repo)', files: [
-      { path: 'app/src/main/java/com/arabictyping/app/data/local/entity/CurriculumStageEntity.kt', desc: 'Stage entity' },
-      { path: 'app/src/main/java/com/arabictyping/app/data/local/entity/ExerciseEntity.kt', desc: 'Exercise entity with foreign key' },
-      { path: 'app/src/main/java/com/arabictyping/app/data/local/entity/LearnerProgressEntity.kt', desc: 'Progress & mode unlock entity' },
-      { path: 'app/src/main/java/com/arabictyping/app/data/local/entity/ExerciseAttemptEntity.kt', desc: 'Attempt history entity' },
-      { path: 'app/src/main/java/com/arabictyping/app/data/local/entity/AttemptMistakeEntity.kt', desc: 'Mistake tracking entity' },
-      { path: 'app/src/main/java/com/arabictyping/app/data/local/dao/CurriculumDao.kt', desc: 'Stage and exercise queries' },
-      { path: 'app/src/main/java/com/arabictyping/app/data/local/dao/ProgressDao.kt', desc: 'Progress read/write queries' },
-      { path: 'app/src/main/java/com/arabictyping/app/data/local/dao/AttemptDao.kt', desc: 'Attempt and mistake queries' },
-      { path: 'app/src/main/java/com/arabictyping/app/data/local/ArabicTypingDatabase.kt', desc: 'Room database instance' },
-      { path: 'app/src/main/java/com/arabictyping/app/data/local/preferences/UserPreferencesRepository.kt', desc: 'DataStore preferences' },
-      { path: 'app/src/main/java/com/arabictyping/app/data/seed/CurriculumSeedData.kt', desc: 'Curriculum database seeds for 7 stages' },
-      { path: 'app/src/main/java/com/arabictyping/app/data/repository/ArabicTypingRepository.kt', desc: 'Clean completion unlock logic' }
-    ]},
-    { category: 'UI Layer (Jetpack Compose & Material 3)', files: [
-      { path: 'app/src/main/java/com/arabictyping/app/ui/theme/Color.kt', desc: 'Approved design tokens (#183B4E, #168C83, etc.)' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/theme/Type.kt', desc: 'Material 3 Typography configuration' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/theme/Theme.kt', desc: 'ArabicTypingTheme with status bar integration' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/keyboard/ArabicKeyboardLayout.kt', desc: 'Standard 4-row Arabic mobile layout' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/keyboard/KeyState.kt', desc: 'DEFAULT, HIGHLIGHTED, PRESSED, DISABLED' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/keyboard/ArabicKeyboard.kt', desc: 'Custom Compose in-app keyboard' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/navigation/Screen.kt', desc: 'Navigation Compose routes' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/navigation/AppNavHost.kt', desc: 'NavHost wiring all 5 screens' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/viewmodel/AppViewModel.kt', desc: 'AndroidViewModel managing UI state' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/screens/HomeScreen.kt', desc: 'Curriculum stages list & quick resume' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/screens/StageOverviewScreen.kt', desc: 'Exercises in selected stage' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/screens/ModeSelectionScreen.kt', desc: 'Guided, Hint, Test selection & locks' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/screens/ExerciseScreen.kt', desc: 'RTL practice area & keyboard interaction' },
-      { path: 'app/src/main/java/com/arabictyping/app/ui/screens/ReportScreen.kt', desc: 'Speed (CPM), accuracy %, mistake list' },
-      { path: 'app/src/main/java/com/arabictyping/app/ArabicTypingApplication.kt', desc: 'Application class' },
-      { path: 'app/src/main/java/com/arabictyping/app/MainActivity.kt', desc: 'ComponentActivity setting Compose content' }
-    ]}
-  ];
+  // Local storage learner mastery counts
+  const [letterCounts, setLetterCounts] = useState<Record<string, number>>(() => {
+    try {
+      const saved = localStorage.getItem('arabic_endless_letter_counts');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const [wordsCompleted, setWordsCompleted] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('arabic_endless_words_completed');
+      return saved ? parseInt(saved, 10) : 0;
+    } catch {
+      return 0;
+    }
+  });
+
+  const entitiesRef = useRef<MovingEntity[]>([]);
+  const gameStateRef = useRef<'START' | 'PLAYING' | 'GAME_OVER'>('START');
+  const lastSpawnTimeRef = useRef<number>(0);
+  const animationFrameRef = useRef<number | null>(null);
+  const lastFrameTimeRef = useRef<number>(0);
+
+  // Keep ref synchronized
+  useEffect(() => {
+    entitiesRef.current = entities;
+  }, [entities]);
+
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
+
+  // Save progress locally
+  useEffect(() => {
+    try {
+      localStorage.setItem('arabic_endless_letter_counts', JSON.stringify(letterCounts));
+      localStorage.setItem('arabic_endless_words_completed', wordsCompleted.toString());
+    } catch {
+      // LocalStorage access handling
+    }
+  }, [letterCounts, wordsCompleted]);
+
+  // Determine current progression tier automatically
+  const getProgressionTier = useCallback(() => {
+    // Stage 1 Check: Have all 28 basic Arabic letters been typed at least 20 times?
+    const basicLetters = ARABIC_ALPHABET.slice(0, 28);
+    const allBasicMastered = basicLetters.every(char => (letterCounts[char] || 0) >= 20);
+
+    if (!allBasicMastered) {
+      return 1; // Tier 1: Individual Letters
+    }
+
+    // Subsequent tiers based on cumulative successful completions
+    if (wordsCompleted < 30) return 2; // Very Short Words
+    if (wordsCompleted < 65) return 3; // Short Words
+    if (wordsCompleted < 105) return 4; // Medium Words
+    if (wordsCompleted < 145) return 5; // Long Words
+    if (wordsCompleted < 190) return 6; // Short Sentences
+    return 7; // Long Sentences
+  }, [letterCounts, wordsCompleted]);
+
+  // Spawn new content based on current progression tier
+  const spawnNextEntity = useCallback((tier: number, initialX: number = 100, specificLane?: number) => {
+    // Select text based on current tier
+    let chosenText = '';
+    let isSentence = false;
+
+    if (tier === 1) {
+      // Pick random letter, prioritizing letters with < 20 correct hits
+      const unmastered = ARABIC_ALPHABET.filter(c => (letterCounts[c] || 0) < 20);
+      const candidates = unmastered.length > 0 ? unmastered : ARABIC_ALPHABET;
+      chosenText = candidates[Math.floor(Math.random() * candidates.length)];
+    } else if (tier === 2) {
+      chosenText = TIER2_VERY_SHORT_WORDS[Math.floor(Math.random() * TIER2_VERY_SHORT_WORDS.length)];
+    } else if (tier === 3) {
+      chosenText = TIER3_SHORT_WORDS[Math.floor(Math.random() * TIER3_SHORT_WORDS.length)];
+    } else if (tier === 4) {
+      chosenText = TIER4_MEDIUM_WORDS[Math.floor(Math.random() * TIER4_MEDIUM_WORDS.length)];
+    } else if (tier === 5) {
+      chosenText = TIER5_LONG_WORDS[Math.floor(Math.random() * TIER5_LONG_WORDS.length)];
+    } else if (tier === 6) {
+      chosenText = TIER6_SHORT_SENTENCES[Math.floor(Math.random() * TIER6_SHORT_SENTENCES.length)];
+      isSentence = true;
+    } else {
+      chosenText = TIER7_LONG_SENTENCES[Math.floor(Math.random() * TIER7_LONG_SENTENCES.length)];
+      isSentence = true;
+    }
+
+    let chosenLane = specificLane;
+    if (chosenLane === undefined) {
+      // Choose lane with highest x or no entity in it to prevent overlapping
+      const laneOccupancy = [100, 100, 100, 100];
+      entitiesRef.current.forEach(e => {
+        if (e.x > 60) {
+          laneOccupancy[e.lane] = Math.min(laneOccupancy[e.lane], e.x);
+        }
+      });
+
+      let bestLane = 0;
+      let minDanger = 0;
+      for (let l = 0; l < 4; l++) {
+        if (laneOccupancy[l] > minDanger) {
+          minDanger = laneOccupancy[l];
+          bestLane = l;
+        }
+      }
+      chosenLane = bestLane;
+    }
+
+    const newEntity: MovingEntity = {
+      id: Math.random().toString(36).substring(2, 9),
+      fullText: chosenText,
+      remainingText: chosenText,
+      typedText: '',
+      x: initialX,
+      lane: chosenLane % 4,
+      isSentence
+    };
+
+    return newEntity;
+  }, [letterCounts]);
+
+  // Update target and highlight state
+  const updateTargetAndHighlight = useCallback((currentEntities: MovingEntity[]) => {
+    if (currentEntities.length === 0) {
+      setActiveHighlightKey(null);
+      return;
+    }
+
+    // Target is the entity closest to left edge (lowest x)
+    const sorted = [...currentEntities].sort((a, b) => a.x - b.x);
+    const target = sorted[0];
+
+    if (!target || target.remainingText.length === 0) {
+      setActiveHighlightKey(null);
+      return;
+    }
+
+    // In sentence tiers (Tier 6 & 7), keyboard highlight is disabled per rules
+    if (target.isSentence) {
+      setActiveHighlightKey(null);
+    } else {
+      const nextChar = target.remainingText[0];
+      setActiveHighlightKey(normalizeArabic(nextChar));
+    }
+  }, []);
+
+  // Main game loop (runs via requestAnimationFrame)
+  useEffect(() => {
+    if (gameState !== 'PLAYING') {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+      return;
+    }
+
+    lastFrameTimeRef.current = performance.now();
+    lastSpawnTimeRef.current = performance.now();
+
+    const loop = (time: number) => {
+      const deltaMs = time - lastFrameTimeRef.current;
+      lastFrameTimeRef.current = time;
+
+      // Current tier governs speed & spawn rate
+      const tier = getProgressionTier();
+      const baseSpeed = 5.2 + (tier * 0.4); // percentage per second
+      const moveDelta = (baseSpeed * deltaMs) / 1000;
+
+      const currentEntities = entitiesRef.current;
+      let isGameOver = false;
+
+      // Move entities from right to left
+      const updatedEntities = currentEntities.map(e => {
+        const nextX = e.x - moveDelta;
+        // Game Over condition: Left edge touched (<= 4%)
+        if (nextX <= 4) {
+          isGameOver = true;
+        }
+        return { ...e, x: nextX };
+      });
+
+      if (isGameOver) {
+        setGameState('GAME_OVER');
+        setActiveHighlightKey(null);
+        return;
+      }
+
+      // Dynamic spawn interval: if screen has few entities, spawn fast!
+      const count = updatedEntities.length;
+      const targetInterval = count <= 1 ? 400 : count === 2 ? 950 : Math.max(1100, 2100 - (tier * 150));
+      if (time - lastSpawnTimeRef.current > targetInterval && updatedEntities.length < 5) {
+        const spawned = spawnNextEntity(tier, 100);
+        if (spawned) {
+          updatedEntities.push(spawned);
+          lastSpawnTimeRef.current = time;
+        }
+      }
+
+      setEntities(updatedEntities);
+      updateTargetAndHighlight(updatedEntities);
+
+      animationFrameRef.current = requestAnimationFrame(loop);
+    };
+
+    animationFrameRef.current = requestAnimationFrame(loop);
+
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [gameState, getProgressionTier, spawnNextEntity, updateTargetAndHighlight]);
+
+  // Handle typing key press (both on-screen and physical keyboard)
+  const handleInputChar = useCallback((pressedChar: string) => {
+    if (gameStateRef.current !== 'PLAYING') return;
+
+    setPressedKey(pressedChar);
+    setTimeout(() => setPressedKey(null), 120);
+
+    const currentEntities = entitiesRef.current;
+    if (currentEntities.length === 0) return;
+
+    // Find the target entity closest to the left edge
+    const sorted = [...currentEntities].sort((a, b) => a.x - b.x);
+    const target = sorted[0];
+
+    if (!target || target.remainingText.length === 0) return;
+
+    const expectedChar = target.remainingText[0];
+
+    // Check correctness (exact match or normalized Arabic match)
+    const isMatch = pressedChar === expectedChar || normalizeArabic(pressedChar) === normalizeArabic(expectedChar);
+
+    if (isMatch) {
+      // Correct keypress!
+      const nextRemaining = target.remainingText.slice(1);
+      const nextTyped = target.typedText + expectedChar;
+
+      // Update letter mastery count if single letter
+      if (target.fullText.length === 1) {
+        setLetterCounts(prev => ({
+          ...prev,
+          [expectedChar]: (prev[expectedChar] || 0) + 1
+        }));
+      }
+
+      if (nextRemaining.length === 0) {
+        // Complete word/sentence/letter typed -> Pop & disappear!
+        const remainingEntities = currentEntities.filter(e => e.id !== target.id);
+        entitiesRef.current = remainingEntities;
+        setEntities(remainingEntities);
+        updateTargetAndHighlight(remainingEntities);
+        setWordsCompleted(prev => prev + 1);
+
+        // If few entities remain, speed up next spawn immediately so screen is never empty
+        if (remainingEntities.length <= 1) {
+          lastSpawnTimeRef.current = 0;
+        }
+      } else {
+        // Advance expected character inside word/sentence
+        const updated = currentEntities.map(e => {
+          if (e.id === target.id) {
+            return {
+              ...e,
+              remainingText: nextRemaining,
+              typedText: nextTyped
+            };
+          }
+          return e;
+        });
+        entitiesRef.current = updated;
+        setEntities(updated);
+        updateTargetAndHighlight(updated);
+      }
+    } else {
+      // Incorrect keypress -> Shake / red flash, item remains, pointer does not advance
+      setErrorFlash(true);
+      setTimeout(() => setErrorFlash(false), 240);
+    }
+  }, [updateTargetAndHighlight]);
+
+  // Handle backspace action
+  const handleBackspace = useCallback(() => {
+    if (gameStateRef.current !== 'PLAYING') return;
+    const currentEntities = entitiesRef.current;
+    if (currentEntities.length === 0) return;
+
+    const sorted = [...currentEntities].sort((a, b) => a.x - b.x);
+    const target = sorted[0];
+
+    if (!target || target.typedText.length === 0) return;
+
+    const lastChar = target.typedText[target.typedText.length - 1];
+    const newTyped = target.typedText.slice(0, -1);
+    const newRemaining = lastChar + target.remainingText;
+
+    const updated = currentEntities.map(e => {
+      if (e.id === target.id) {
+        return {
+          ...e,
+          typedText: newTyped,
+          remainingText: newRemaining
+        };
+      }
+      return e;
+    });
+
+    entitiesRef.current = updated;
+    setEntities(updated);
+    updateTargetAndHighlight(updated);
+  }, [updateTargetAndHighlight]);
+
+  // Listen for physical keyboard input
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (gameStateRef.current !== 'PLAYING') return;
+
+      if (e.key === 'Backspace') {
+        e.preventDefault();
+        handleBackspace();
+        return;
+      }
+
+      // If user typed spacebar
+      if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault();
+        handleInputChar(' ');
+        return;
+      }
+
+      // Check if key is already an Arabic character
+      if (ARABIC_ALPHABET.includes(e.key)) {
+        e.preventDefault();
+        handleInputChar(e.key);
+        return;
+      }
+
+      // Check if physical key maps to an Arabic letter
+      const lower = e.key.toLowerCase();
+      if (QWERTY_TO_ARABIC[lower]) {
+        e.preventDefault();
+        handleInputChar(QWERTY_TO_ARABIC[lower]);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleInputChar, handleBackspace]);
+
+  // Start or Restart Game
+  const startGame = () => {
+    setErrorFlash(false);
+    setActiveHighlightKey(null);
+    setGameState('PLAYING');
+
+    const tier = getProgressionTier();
+    // Pre-spawn 2-3 letters at staggered x positions across different lanes right away
+    const e1 = spawnNextEntity(tier, 70, 1);
+    const e2 = spawnNextEntity(tier, 88, 2);
+    const e3 = spawnNextEntity(tier, 105, 0);
+    const initialList = [e1, e2, e3].filter(Boolean) as MovingEntity[];
+
+    entitiesRef.current = initialList;
+    setEntities(initialList);
+    updateTargetAndHighlight(initialList);
+    lastSpawnTimeRef.current = performance.now();
+  };
 
   return (
-    <div className="min-h-screen bg-[#F6F7F5] text-[#17252D] font-sans">
-      {/* Top Header */}
-      <header className="bg-[#183B4E] text-white shadow-md">
-        <div className="max-w-6xl mx-auto px-6 py-5 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#168C83] flex items-center justify-center font-bold text-xl text-white shadow-sm">
-              ع
-            </div>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight">تعلم الطباعة العربية (Arabic Typing Learning)</h1>
-              <p className="text-xs text-teal-200">Native Android Application • Kotlin & Jetpack Compose</p>
-            </div>
+    <div className="relative w-full h-screen overflow-hidden bg-[#F6F7F5] select-none font-sans flex flex-col justify-between">
+      {/* START SCREEN */}
+      {gameState === 'START' && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-[#183B4E] text-white p-6">
+          <div className="w-16 h-16 rounded-2xl bg-[#168C83] flex items-center justify-center text-3xl font-bold mb-6 shadow-lg shadow-teal-950/40">
+            ض
           </div>
-          <div className="flex items-center gap-2 bg-[#122b39] px-3 py-1.5 rounded-full border border-teal-800 text-xs font-medium text-emerald-400">
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>All Approved Docs Intact</span>
-          </div>
+          <button
+            onClick={startGame}
+            className="px-10 py-4 bg-[#168C83] hover:bg-[#147a72] active:scale-95 text-white font-bold text-xl rounded-2xl shadow-xl transition-all duration-150 cursor-pointer"
+          >
+            Start Game (ابدأ اللعبة)
+          </button>
         </div>
-      </header>
+      )}
 
-      {/* Main Tabs Navigation */}
-      <div className="bg-white border-b border-[#E2E8E7]">
-        <div className="max-w-6xl mx-auto px-6 flex gap-6">
+      {/* GAME OVER SCREEN */}
+      {gameState === 'GAME_OVER' && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-[#183B4E]/95 backdrop-blur-sm text-white p-6">
+          <div className="text-3xl font-bold text-[#C44747] mb-2 tracking-wide">
+            Game Over
+          </div>
+          <div className="text-xl font-medium text-slate-300 mb-8" dir="rtl">
+            انتهت اللعبة
+          </div>
           <button
-            onClick={() => setActiveTab('overview')}
-            className={`py-3.5 px-2 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors ${
-              activeTab === 'overview'
-                ? 'border-[#168C83] text-[#168C83]'
-                : 'border-transparent text-[#64727A] hover:text-[#17252D]'
-            }`}
+            onClick={startGame}
+            className="px-10 py-4 bg-[#168C83] hover:bg-[#147a72] active:scale-95 text-white font-bold text-xl rounded-2xl shadow-xl transition-all duration-150 cursor-pointer"
           >
-            <Smartphone className="w-4 h-4" />
-            Project Status & Features
-          </button>
-          <button
-            onClick={() => setActiveTab('structure')}
-            className={`py-3.5 px-2 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors ${
-              activeTab === 'structure'
-                ? 'border-[#168C83] text-[#168C83]'
-                : 'border-transparent text-[#64727A] hover:text-[#17252D]'
-            }`}
-          >
-            <FolderTree className="w-4 h-4" />
-            Android Project Tree ({androidFiles.reduce((acc, cat) => acc + cat.files.length, 0)} Files)
-          </button>
-          <button
-            onClick={() => setActiveTab('architecture')}
-            className={`py-3.5 px-2 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors ${
-              activeTab === 'architecture'
-                ? 'border-[#168C83] text-[#168C83]'
-                : 'border-transparent text-[#64727A] hover:text-[#17252D]'
-            }`}
-          >
-            <Layers className="w-4 h-4" />
-            MVVM Architecture & State Rules
-          </button>
-          <button
-            onClick={() => setActiveTab('commands')}
-            className={`py-3.5 px-2 text-sm font-semibold border-b-2 flex items-center gap-2 transition-colors ${
-              activeTab === 'commands'
-                ? 'border-[#168C83] text-[#168C83]'
-                : 'border-transparent text-[#64727A] hover:text-[#17252D]'
-            }`}
-          >
-            <Terminal className="w-4 h-4" />
-            Build & Run Guide
+            Restart Game (إعادة اللعب)
           </button>
         </div>
+      )}
+
+      {/* TOP / MIDDLE: MOVING ARABIC CHARACTERS & WORDS */}
+      <div className="relative w-full flex-1 overflow-hidden">
+        {/* Left Danger Edge / Line */}
+        <div className="absolute left-0 top-0 bottom-0 w-2.5 bg-gradient-to-r from-[#C44747] to-transparent z-10 opacity-80" />
+        <div className="absolute left-2.5 top-0 bottom-0 w-px bg-red-400/40 border-l border-dashed border-red-500/60 z-10" />
+
+        {/* 4 Lanes for smooth non-overlapping vertical spacing */}
+        <div className="absolute inset-0 flex flex-col justify-around py-3">
+          {[0, 1, 2, 3].map(lane => (
+            <div
+              key={lane}
+              className="relative w-full h-14 flex items-center border-b border-slate-200/50"
+            />
+          ))}
+        </div>
+
+        {/* Moving Arabic Entities */}
+        {entities.map(entity => {
+          // Lanes distributed vertically
+          const laneTopPercentages = [12, 36, 60, 84];
+          const topPosition = laneTopPercentages[entity.lane] || 40;
+          const isTarget = entities.length > 0 && entity.id === [...entities].sort((a, b) => a.x - b.x)[0]?.id;
+
+          return (
+            <div
+              key={entity.id}
+              className={`absolute transform -translate-y-1/2 flex items-center transition-transform duration-75 ${
+                isTarget ? 'scale-105' : 'scale-100 opacity-90'
+              }`}
+              style={{
+                left: `${entity.x}%`,
+                top: `${topPosition}%`,
+                direction: 'rtl'
+              }}
+            >
+              <div
+                className={`px-4 py-2 rounded-xl flex items-center justify-center shadow-md border ${
+                  isTarget
+                    ? 'bg-white border-[#168C83] shadow-teal-900/10'
+                    : 'bg-white/95 border-slate-200 shadow-slate-900/5'
+                }`}
+              >
+                {/* Already Typed Characters in Green */}
+                {entity.typedText && (
+                  <span className="text-[#23865B] font-bold text-2xl tracking-wide opacity-80 ml-0.5">
+                    {entity.typedText}
+                  </span>
+                )}
+
+                {/* Remaining Characters to Type */}
+                <span
+                  className={`font-bold text-2xl tracking-wide ${
+                    isTarget ? 'text-[#183B4E]' : 'text-[#64727A]'
+                  }`}
+                >
+                  {entity.remainingText}
+                </span>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
-      {/* Main Content Area */}
-      <main className="max-w-6xl mx-auto px-6 py-8">
-        {activeTab === 'overview' && (
-          <div className="space-y-6">
-            {/* Status Highlight Banner */}
-            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 flex items-start gap-4 shadow-sm">
-              <CheckCircle2 className="w-7 h-7 text-emerald-600 mt-1 flex-shrink-0" />
-              <div>
-                <h2 className="text-lg font-bold text-emerald-900">
-                  Native Android Project Generated Successfully
-                </h2>
-                <p className="text-sm text-emerald-800 mt-1 leading-relaxed">
-                  The complete Kotlin + Jetpack Compose codebase has been generated in accordance with your specifications.
-                  All 6 original project documents (<code className="px-1.5 py-0.5 bg-emerald-100 rounded">01._PRD</code>, <code className="px-1.5 py-0.5 bg-emerald-100 rounded">02._STATE</code>, <code className="px-1.5 py-0.5 bg-emerald-100 rounded">03._TOKENS</code>, <code className="px-1.5 py-0.5 bg-emerald-100 rounded">04._STACK</code>, <code className="px-1.5 py-0.5 bg-emerald-100 rounded">05._SCHEMA</code>, <code className="px-1.5 py-0.5 bg-emerald-100 rounded">06._PLAN</code>) remain 100% intact in <code className="px-1.5 py-0.5 bg-emerald-100 rounded">/public/assets/aistudio/</code>.
-                </p>
-              </div>
-            </div>
-
-            {/* Approved Features Matrix */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-white p-6 rounded-2xl border border-[#E2E8E7] shadow-sm">
-                <div className="w-10 h-10 rounded-lg bg-teal-50 text-[#168C83] flex items-center justify-center mb-4">
-                  <Sparkles className="w-5 h-5" />
-                </div>
-                <h3 className="font-bold text-[#17252D] text-base mb-2">Feature 1: Three Learning Modes</h3>
-                <ul className="text-xs text-[#64727A] space-y-2">
-                  <li className="flex items-start gap-1.5">
-                    <span className="text-[#168C83] font-bold">•</span>
-                    <span><strong>Guided Mode:</strong> Highlights the required key in advance. Advances expected pointer on correct input only.</span>
-                  </li>
-                  <li className="flex items-start gap-1.5">
-                    <span className="text-[#168C83] font-bold">•</span>
-                    <span><strong>Hint Mode:</strong> No initial highlight. Reveals the correct key as a hint only upon a mistake.</span>
-                  </li>
-                  <li className="flex items-start gap-1.5">
-                    <span className="text-[#168C83] font-bold">•</span>
-                    <span><strong>Test Mode:</strong> No hints or highlights. Records full attempt speed & mistake accuracy.</span>
-                  </li>
-                </ul>
-              </div>
-
-              <div className="bg-white p-6 rounded-2xl border border-[#E2E8E7] shadow-sm">
-                <div className="w-10 h-10 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center mb-4">
-                  <BookOpen className="w-5 h-5" />
-                </div>
-                <h3 className="font-bold text-[#17252D] text-base mb-2">Feature 2: 7-Stage Curriculum</h3>
-                <ol className="text-xs text-[#64727A] space-y-1.5 list-decimal list-inside">
-                  <li>Individual Arabic letters</li>
-                  <li>Short combinations using learned letters</li>
-                  <li>Small words (3-4 letters)</li>
-                  <li>Medium words (5-6 letters)</li>
-                  <li>Longer/difficult words</li>
-                  <li>Short sentences</li>
-                  <li>Longer sentences</li>
-                </ol>
-                <p className="text-[11px] text-teal-700 bg-teal-50 mt-3 p-2 rounded-lg font-medium">
-                  Strict sequential unlock: Next stage unlocks only after clean (0 mistakes) completion.
-                </p>
-              </div>
-
-              <div className="bg-white p-6 rounded-2xl border border-[#E2E8E7] shadow-sm">
-                <div className="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center mb-4">
-                  <Database className="w-5 h-5" />
-                </div>
-                <h3 className="font-bold text-[#17252D] text-base mb-2">Feature 3: Mistake & Speed Report</h3>
-                <ul className="text-xs text-[#64727A] space-y-2">
-                  <li className="flex items-start gap-1.5">
-                    <span className="text-amber-600 font-bold">•</span>
-                    <span>Total characters attempted & correct count</span>
-                  </li>
-                  <li className="flex items-start gap-1.5">
-                    <span className="text-amber-600 font-bold">•</span>
-                    <span>Accuracy percentage: <code className="text-[10px] bg-slate-100 p-0.5 rounded">correct / total * 100</code></span>
-                  </li>
-                  <li className="flex items-start gap-1.5">
-                    <span className="text-amber-600 font-bold">•</span>
-                    <span>Characters Per Minute (CPM) speed calculation</span>
-                  </li>
-                  <li className="flex items-start gap-1.5">
-                    <span className="text-amber-600 font-bold">•</span>
-                    <span>Most frequently mistyped Arabic keys</span>
-                  </li>
-                </ul>
-              </div>
-            </div>
-
-            {/* In-App Arabic Keyboard Specifications */}
-            <div className="bg-white p-6 rounded-2xl border border-[#E2E8E7] shadow-sm">
-              <h3 className="text-base font-bold text-[#17252D] mb-3">Custom Compose Arabic Keyboard UI</h3>
-              <p className="text-xs text-[#64727A] mb-4">
-                Implemented in <code className="text-teal-700 font-mono">ArabicKeyboard.kt</code> without system IME dependencies. Features touch elevation, dynamic highlight states (<code className="text-slate-700">DEFAULT</code>, <code className="text-slate-700">HIGHLIGHTED</code>, <code className="text-slate-700">PRESSED</code>, <code className="text-slate-700">DISABLED</code>), error flashes, and RTL support.
-              </p>
-              <div className="bg-[#183B4E] p-4 rounded-xl text-center space-y-2">
-                <div className="flex justify-center gap-1.5 flex-wrap">
-                  {['ض', 'ص', 'ث', 'ق', 'ف', 'غ', 'ع', 'ه', 'خ', 'ح', 'ج', 'د'].map(k => (
-                    <span key={k} className="w-8 h-9 rounded bg-white text-[#17252D] font-bold text-sm flex items-center justify-center shadow">
-                      {k}
-                    </span>
-                  ))}
-                </div>
-                <div className="flex justify-center gap-1.5 flex-wrap">
-                  {['ش', 'س', 'ي', 'ب', 'ل', 'ا', 'ت', 'ن', 'م', 'ك', 'ط'].map(k => (
-                    <span key={k} className="w-8 h-9 rounded bg-white text-[#17252D] font-bold text-sm flex items-center justify-center shadow">
-                      {k}
-                    </span>
-                  ))}
-                </div>
-                <div className="flex justify-center gap-1.5 flex-wrap">
-                  {['ئ', 'ء', 'ؤ', 'ر', 'ى', 'ة', 'و', 'ز', 'ظ'].map(k => (
-                    <span key={k} className="w-8 h-9 rounded bg-white text-[#17252D] font-bold text-sm flex items-center justify-center shadow">
-                      {k}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
+      {/* BOTTOM: EXACT GOOGLE GBOARD ARABIC KEYBOARD (FROM USER SCREENSHOT) */}
+      <div
+        className={`w-full bg-[#20313f]/95 backdrop-blur-md pt-2 pb-3 px-1.5 shadow-2xl z-20 border-t border-slate-600/40 transition-colors duration-150 ${
+          errorFlash ? 'ring-4 ring-[#C44747] ring-inset' : ''
+        }`}
+      >
+        <div className="max-w-xl mx-auto flex flex-col gap-1.5">
+          {/* Top Number Row: 10 keys (١ ٢ ٣ ٤ ٥ ٦ ٧ ٨ ٩ ٠) */}
+          <div className="flex justify-center gap-1 w-full">
+            {GBOARD_NUMBERS.map(num => (
+              <button
+                key={num}
+                onClick={() => handleInputChar(num)}
+                className="flex-1 h-9 rounded-[7px] font-bold text-base flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1px_0_rgba(0,0,0,0.3)] bg-[#4a6374]/80 text-[#f1f5f9] hover:bg-[#577284] active:translate-y-0.5"
+              >
+                {num}
+              </button>
+            ))}
           </div>
-        )}
 
-        {activeTab === 'structure' && (
-          <div className="space-y-6">
-            <div className="bg-white p-6 rounded-2xl border border-[#E2E8E7] shadow-sm">
-              <h2 className="text-lg font-bold text-[#17252D] mb-1">Generated Android Project File Tree</h2>
-              <p className="text-xs text-[#64727A] mb-6">
-                All source files below exist directly in the project workspace, ready for Android Studio or Gradle CLI.
-              </p>
+          {/* Row 1: 11 keys (ض ص ث ق ف غ ع ه خ ح ج) */}
+          <div className="flex justify-center gap-1 w-full">
+            {GBOARD_ROW_1.map(item => {
+              const isHighlight = activeHighlightKey === item.char;
+              const isPressed = pressedKey === item.char;
 
-              <div className="space-y-6">
-                {androidFiles.map((group, idx) => (
-                  <div key={idx} className="border border-[#E2E8E7] rounded-xl overflow-hidden">
-                    <div className="bg-slate-50 px-4 py-2.5 font-semibold text-xs text-[#183B4E] border-b border-[#E2E8E7] flex items-center gap-2">
-                      <FolderTree className="w-3.5 h-3.5 text-[#168C83]" />
-                      <span>{group.category}</span>
-                    </div>
-                    <div className="divide-y divide-[#E2E8E7]">
-                      {group.files.map((file, fIdx) => (
-                        <div key={fIdx} className="px-4 py-3 flex items-start justify-between hover:bg-slate-50/50">
-                          <div>
-                            <span className="font-mono text-xs font-semibold text-teal-800">{file.path}</span>
-                            <p className="text-[11px] text-[#64727A] mt-0.5">{file.desc}</p>
-                          </div>
-                          <span className="px-2 py-0.5 text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 rounded font-medium">
-                            Created
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+              return (
+                <button
+                  key={item.char}
+                  onClick={() => handleInputChar(item.char)}
+                  className={`relative flex-1 h-11 sm:h-12 rounded-[7px] flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)] active:translate-y-0.5 ${
+                    isPressed
+                      ? 'bg-[#3b5160] text-white scale-95'
+                      : isHighlight
+                      ? 'bg-[#D69A32] text-white ring-2 ring-amber-300 shadow-lg shadow-amber-500/50 scale-105 z-10'
+                      : 'bg-[#4a6374]/85 text-[#f1f5f9] hover:bg-[#577284]'
+                  }`}
+                >
+                  {/* Secondary Symbol Hint (Top Right) */}
+                  <span className="absolute top-0.5 right-1 text-[9px] text-slate-300/80 font-mono leading-none">
+                    {item.hint}
+                  </span>
+                  {/* Main Arabic Letter */}
+                  <span className="text-xl font-bold pt-1">
+                    {item.char}
+                  </span>
+                </button>
+              );
+            })}
           </div>
-        )}
 
-        {activeTab === 'architecture' && (
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="bg-white p-6 rounded-2xl border border-[#E2E8E7] shadow-sm">
-                <h3 className="font-bold text-[#17252D] mb-3 flex items-center gap-2">
-                  <Layers className="w-4 h-4 text-[#168C83]" />
-                  Domain & Engine Layer
-                </h3>
-                <p className="text-xs text-[#64727A] leading-relaxed mb-4">
-                  The <code className="text-teal-800 font-mono">TypingEngine.kt</code> is completely decoupled from Android UI, making it 100% unit-testable. It manages:
-                </p>
-                <ul className="text-xs text-[#64727A] space-y-2">
-                  <li className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-                    <strong>Expected Index Pointer:</strong> Starts at 0. Only advances when <code className="text-slate-800 font-mono">pressedChar == targetText[expectedIndex]</code>.
-                  </li>
-                  <li className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-                    <strong>Error State Handling:</strong> On mistype, records a <code className="text-slate-800 font-mono">MistakeRecord</code> with timestamp and position. Index does not advance.
-                  </li>
-                  <li className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-                    <strong>Mode Logic:</strong> Guided pre-highlights; Hint only flashes highlight on error; Test stays dark.
-                  </li>
-                </ul>
-              </div>
+          {/* Row 2: 11 keys (ش س ي ب ل ا ت ن م ك ط) */}
+          <div className="flex justify-center gap-1 w-full">
+            {GBOARD_ROW_2.map(item => {
+              const isHighlight = activeHighlightKey === item.char;
+              const isPressed = pressedKey === item.char;
 
-              <div className="bg-white p-6 rounded-2xl border border-[#E2E8E7] shadow-sm">
-                <h3 className="font-bold text-[#17252D] mb-3 flex items-center gap-2">
-                  <Database className="w-4 h-4 text-[#168C83]" />
-                  Room & Offline Data Layer
-                </h3>
-                <p className="text-xs text-[#64727A] leading-relaxed mb-4">
-                  Operates completely offline without network, login, or cloud sync:
-                </p>
-                <ul className="text-xs text-[#64727A] space-y-2">
-                  <li className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-                    <strong>Curriculum Seed:</strong> Automatically seeds all 7 curriculum stages and exercises on first boot.
-                  </li>
-                  <li className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-                    <strong>Learner Progress:</strong> Tracks unlocked stages and mode flags (<code className="text-slate-800 font-mono">guidedUnlocked</code>, <code className="text-slate-800 font-mono">hintUnlocked</code>, <code className="text-slate-800 font-mono">testUnlocked</code>).
-                  </li>
-                  <li className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-                    <strong>Attempt History:</strong> Persists every completion with duration, mistakes, and accuracy.
-                  </li>
-                </ul>
-              </div>
-            </div>
+              return (
+                <button
+                  key={item.char}
+                  onClick={() => handleInputChar(item.char)}
+                  className={`relative flex-1 h-11 sm:h-12 rounded-[7px] flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)] active:translate-y-0.5 ${
+                    isPressed
+                      ? 'bg-[#3b5160] text-white scale-95'
+                      : isHighlight
+                      ? 'bg-[#D69A32] text-white ring-2 ring-amber-300 shadow-lg shadow-amber-500/50 scale-105 z-10'
+                      : 'bg-[#4a6374]/85 text-[#f1f5f9] hover:bg-[#577284]'
+                  }`}
+                >
+                  {/* Secondary Symbol Hint (Top Right) */}
+                  <span className="absolute top-0.5 right-1 text-[9px] text-slate-300/80 font-mono leading-none">
+                    {item.hint}
+                  </span>
+                  {/* Main Arabic Letter */}
+                  <span className="text-xl font-bold pt-1">
+                    {item.char}
+                  </span>
+                </button>
+              );
+            })}
           </div>
-        )}
 
-        {activeTab === 'commands' && (
-          <div className="space-y-6">
-            <div className="bg-white p-6 rounded-2xl border border-[#E2E8E7] shadow-sm">
-              <h2 className="text-lg font-bold text-[#17252D] mb-2 flex items-center gap-2">
-                <Terminal className="w-5 h-5 text-[#168C83]" />
-                How to Build & Run the Android APK
-              </h2>
-              <p className="text-xs text-[#64727A] mb-6">
-                Because this cloud sandbox is a lightweight Linux Web/Node container without the multi-gigabyte Android SDK & JDK, you can build the APK on your machine using standard Android Studio or Gradle CLI:
-              </p>
+          {/* Row 3: 10 letter keys (ذ ء ؤ ر ى ة و ز ظ د) + Backspace Key */}
+          <div className="flex justify-center gap-1 w-full">
+            {GBOARD_ROW_3.map(item => {
+              const isHighlight = activeHighlightKey === item.char;
+              const isPressed = pressedKey === item.char;
 
-              <div className="space-y-4">
-                <div className="p-5 bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 rounded-xl">
-                  <div className="flex items-center gap-2 text-teal-900 font-bold text-sm mb-2">
-                    <Smartphone className="w-4 h-4 text-[#168C83]" />
-                    <span>Build & Download on Android Phone (No Computer Needed)</span>
-                  </div>
-                  <ol className="text-xs text-teal-900 space-y-2 list-decimal list-inside leading-relaxed">
-                    <li>Push this repository to your GitHub account (or sync changes).</li>
-                    <li>Open your GitHub repository in your phone's web browser and tap the <strong>Actions</strong> tab.</li>
-                    <li>Select <strong>Build Android Debug APK</strong> from the left sidebar.</li>
-                    <li>Tap <strong>Run workflow</strong> &gt; <strong>Run workflow</strong> (via <code className="bg-white/80 px-1 py-0.5 rounded text-teal-800">workflow_dispatch</code>).</li>
-                    <li>GitHub Actions cloud runners will automatically install JDK 17, Android SDK 35, and official Gradle 8.11.1, compile the APK, and upload it as an artifact.</li>
-                    <li>Once finished (green checkmark), scroll down to <strong>Artifacts</strong> and tap <strong>arabic-typing-app-debug-apk</strong> to download the zip file containing the APK directly to your phone.</li>
-                  </ol>
-                </div>
+              return (
+                <button
+                  key={item.char}
+                  onClick={() => handleInputChar(item.char)}
+                  className={`relative flex-1 h-11 sm:h-12 rounded-[7px] flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)] active:translate-y-0.5 ${
+                    isPressed
+                      ? 'bg-[#3b5160] text-white scale-95'
+                      : isHighlight
+                      ? 'bg-[#D69A32] text-white ring-2 ring-amber-300 shadow-lg shadow-amber-500/50 scale-105 z-10'
+                      : 'bg-[#4a6374]/85 text-[#f1f5f9] hover:bg-[#577284]'
+                  }`}
+                >
+                  {/* Secondary Symbol Hint (Top Right) */}
+                  <span className="absolute top-0.5 right-1 text-[9px] text-slate-300/80 font-mono leading-none">
+                    {item.hint}
+                  </span>
+                  {/* Main Arabic Letter */}
+                  <span className="text-xl font-bold pt-1">
+                    {item.char}
+                  </span>
+                </button>
+              );
+            })}
 
-                <div className="bg-slate-900 text-slate-100 p-4 rounded-xl text-xs font-mono">
-                  <p className="text-slate-400 mb-2"># Alternative: Local build with Gradle (if on a computer)</p>
-                  <p className="text-emerald-400">gradle assembleDebug</p>
-                  <p className="text-slate-400 mt-3 mb-1"># Generated APK artifact path:</p>
-                  <p className="text-teal-300 font-semibold">app/build/outputs/apk/debug/app-debug.apk</p>
-                </div>
-              </div>
-            </div>
+            {/* Backspace Key (Far Right of Row 3) */}
+            <button
+              onClick={handleBackspace}
+              className="w-11 sm:w-12 h-11 sm:h-12 rounded-[7px] bg-[#334653]/90 text-slate-200 hover:bg-[#3d5262] active:translate-y-0.5 flex items-center justify-center cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)]"
+              title="Backspace"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-slate-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M3 12l6.5-7.5H20a1 1 0 011 1v13a1 1 0 01-1 1H9.5L3 12z" />
+              </svg>
+            </button>
           </div>
-        )}
-      </main>
+
+          {/* Row 4: Gboard Utility & Space Row */}
+          <div className="flex justify-between items-center gap-1.5 w-full mt-0.5">
+            {/* ؟۱۲۳ Button */}
+            <button
+              onClick={() => handleInputChar('؟')}
+              className="w-13 h-10 sm:h-11 rounded-[7px] font-bold text-sm bg-[#334653]/90 text-[#f1f5f9] hover:bg-[#3d5262] shadow-[0_1.5px_0_rgba(0,0,0,0.3)] flex items-center justify-center cursor-pointer active:translate-y-0.5"
+            >
+              ؟۱۲۳
+            </button>
+
+            {/* Emoji Button with Comma Hint */}
+            <button
+              onClick={() => handleInputChar('،')}
+              className="w-10 h-10 sm:h-11 rounded-[7px] bg-[#334653]/90 text-[#f1f5f9] hover:bg-[#3d5262] shadow-[0_1.5px_0_rgba(0,0,0,0.3)] flex flex-col items-center justify-center cursor-pointer active:translate-y-0.5"
+            >
+              <span className="text-sm leading-none">🙂</span>
+              <span className="text-[10px] text-slate-400 leading-none">,</span>
+            </button>
+
+            {/* Globe Language Switcher Button */}
+            <button
+              className="w-10 h-10 sm:h-11 rounded-[7px] bg-[#334653]/90 text-[#f1f5f9] hover:bg-[#3d5262] shadow-[0_1.5px_0_rgba(0,0,0,0.3)] flex items-center justify-center cursor-pointer active:translate-y-0.5"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
+              </svg>
+            </button>
+
+            {/* Wide Spacebar with 'العربية' */}
+            <button
+              onClick={() => handleInputChar(' ')}
+              className={`flex-1 h-10 sm:h-11 rounded-[7px] font-medium text-sm sm:text-base flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)] active:translate-y-0.5 ${
+                pressedKey === ' '
+                  ? 'bg-[#3b5160] text-white scale-95'
+                  : activeHighlightKey === ' '
+                  ? 'bg-[#D69A32] text-white ring-2 ring-amber-300 shadow-lg shadow-amber-500/50'
+                  : 'bg-[#4a6374]/80 text-[#f1f5f9] hover:bg-[#577284]'
+              }`}
+            >
+              العربية
+            </button>
+
+            {/* Blue Action / Enter Button ➔ */}
+            <button
+              onClick={() => handleInputChar(' ')}
+              className="w-13 h-10 sm:h-11 rounded-full bg-[#2563eb] hover:bg-[#1d4ed8] text-white flex items-center justify-center font-bold text-lg shadow-lg active:scale-95 cursor-pointer"
+              title="Enter"
+            >
+              ➔
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
