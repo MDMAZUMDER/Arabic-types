@@ -115,8 +115,15 @@ export default function App() {
   const [gameState, setGameState] = useState<'START' | 'PLAYING' | 'GAME_OVER'>('START');
   const [entities, setEntities] = useState<MovingEntity[]>([]);
   const [activeHighlightKey, setActiveHighlightKey] = useState<string | null>(null);
+  const [wrongKey, setWrongKey] = useState<string | null>(null);
   const [errorFlash, setErrorFlash] = useState(false);
   const [pressedKey, setPressedKey] = useState<string | null>(null);
+
+  // Stats: Speed (CPM), Total Points, Mistakes, Streak
+  const [score, setScore] = useState<number>(0);
+  const [mistakes, setMistakes] = useState<number>(0);
+  const [cpm, setCpm] = useState<number>(0);
+  const [streak, setStreak] = useState<number>(0);
 
   // Local storage learner mastery counts (each letter must reach 20, capped at 20)
   const [letterCounts, setLetterCounts] = useState<Record<string, number>>(() => {
@@ -146,8 +153,16 @@ export default function App() {
   const lastSpawnTimeRef = useRef<number>(0);
   const animationFrameRef = useRef<number | null>(null);
   const lastFrameTimeRef = useRef<number>(0);
+  const gameStartTimeRef = useRef<number>(0);
 
-  // Keep ref synchronized
+  // Rolling window of correct hit timestamps for CPM calculation
+  const correctHitsRef = useRef<number[]>([]);
+  const smoothedCpmRef = useRef<number>(0);
+  const lastCpmUpdateRef = useRef<number>(0);
+  const streakRef = useRef<number>(0);
+  const wrongKeyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Keep refs synchronized
   useEffect(() => {
     entitiesRef.current = entities;
   }, [entities]);
@@ -155,6 +170,15 @@ export default function App() {
   useEffect(() => {
     gameStateRef.current = gameState;
   }, [gameState]);
+
+  // Clean up wrongKey timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (wrongKeyTimeoutRef.current) {
+        clearTimeout(wrongKeyTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Save progress locally (persisted across reloads and game over)
   useEffect(() => {
@@ -269,14 +293,40 @@ export default function App() {
 
     lastFrameTimeRef.current = performance.now();
     lastSpawnTimeRef.current = performance.now();
+    lastCpmUpdateRef.current = performance.now();
 
     const loop = (time: number) => {
       const deltaMs = time - lastFrameTimeRef.current;
       lastFrameTimeRef.current = time;
 
-      // Current tier governs speed & spawn rate
+      // 1. Calculate CPM from rolling window (last 30 seconds)
+      const windowMs = 30000;
+      correctHitsRef.current = correctHitsRef.current.filter(t => time - t <= windowMs);
+      const sessionElapsedSec = Math.max(1.5, (time - gameStartTimeRef.current) / 1000);
+      const effectiveWindowSec = Math.min(sessionElapsedSec, windowMs / 1000);
+      const instantCpm = effectiveWindowSec > 0
+        ? (correctHitsRef.current.length / effectiveWindowSec) * 60
+        : 0;
+
+      // Smooth CPM with exponential moving average (EMA)
+      if (smoothedCpmRef.current === 0 && instantCpm > 0) {
+        smoothedCpmRef.current = instantCpm;
+      } else {
+        smoothedCpmRef.current = smoothedCpmRef.current * 0.92 + instantCpm * 0.08;
+      }
+
+      // Update state CPM at throttled interval (every ~200ms) to ensure smooth rendering
+      if (time - lastCpmUpdateRef.current > 200) {
+        lastCpmUpdateRef.current = time;
+        setCpm(Math.round(smoothedCpmRef.current));
+      }
+
+      // 2. Current tier and CPM govern speed & spawn rate
       const tier = getProgressionTier();
-      const baseSpeed = 5.2 + (tier * 0.4); // percentage per second
+      const currentSmoothedCpm = smoothedCpmRef.current;
+
+      // Smooth entity movement speed: base 5.0% + slight scaling with tier and CPM
+      const baseSpeed = 5.0 + (tier * 0.35) + (Math.min(220, currentSmoothedCpm) * 0.012);
       const moveDelta = (baseSpeed * deltaMs) / 1000;
 
       const currentEntities = entitiesRef.current;
@@ -295,12 +345,29 @@ export default function App() {
       if (isGameOver) {
         setGameState('GAME_OVER');
         setActiveHighlightKey(null);
+        setWrongKey(null);
         return;
       }
 
-      // Dynamic spawn interval: if screen has few entities, spawn fast!
+      // 3. Dynamic Spawn Interval:
+      // High CPM -> faster spawns (shorter interval)
+      // Low CPM -> slower spawns (longer interval)
+      // Smooth gradual transition
       const count = updatedEntities.length;
-      const targetInterval = count <= 1 ? 400 : count === 2 ? 950 : Math.max(1100, 2100 - (tier * 150));
+      const clampedCpm = Math.max(0, Math.min(240, currentSmoothedCpm));
+      const cpmSpawnInterval = 2500 - (clampedCpm * 6.5) - (tier * 50);
+      const baseInterval = Math.max(900, Math.min(2700, cpmSpawnInterval));
+
+      // Fast-spawn fallback if screen is nearly empty so user is never stalled
+      let targetInterval: number;
+      if (count <= 1) {
+        targetInterval = 420;
+      } else if (count === 2) {
+        targetInterval = Math.max(650, baseInterval * 0.65);
+      } else {
+        targetInterval = baseInterval;
+      }
+
       if (time - lastSpawnTimeRef.current > targetInterval && updatedEntities.length < 5) {
         const spawned = spawnNextEntity(tier, 100);
         if (spawned) {
@@ -350,7 +417,44 @@ export default function App() {
       const nextRemaining = target.remainingText.slice(1);
       const nextTyped = target.typedText + expectedChar;
 
-      // Update letter mastery count if single letter (capped at REQUIRED_LETTER_HITS = 20)
+      // 1. Record correct hit timestamp for CPM tracking
+      correctHitsRef.current.push(performance.now());
+
+      // 2. Points & Bonus calculation:
+      // Base points per correct char: 10
+      let pointsEarned = 10;
+
+      // Speed bonus: +1 point per 20 CPM
+      const speedBonus = Math.floor(smoothedCpmRef.current / 20);
+      pointsEarned += speedBonus;
+
+      // Streak tracking & bonus
+      const currentStreak = streakRef.current + 1;
+      streakRef.current = currentStreak;
+      setStreak(currentStreak);
+      if (currentStreak >= 50) {
+        pointsEarned += 10;
+      } else if (currentStreak >= 25) {
+        pointsEarned += 5;
+      } else if (currentStreak >= 10) {
+        pointsEarned += 2;
+      }
+
+      // Stage completion bonus when full word/sentence is completed
+      if (nextRemaining.length === 0) {
+        const completionBonus = target.tier === 1 ? 5
+          : target.tier === 2 ? 20
+          : target.tier === 3 ? 40
+          : target.tier === 4 ? 70
+          : target.tier === 5 ? 100
+          : target.tier === 6 ? 150
+          : 250;
+        pointsEarned += completionBonus;
+      }
+
+      setScore(prev => prev + pointsEarned);
+
+      // 3. Update letter mastery count if single letter (capped at REQUIRED_LETTER_HITS = 20)
       if (target.fullText.length === 1) {
         setLetterCounts(prev => ({
           ...prev,
@@ -403,7 +507,20 @@ export default function App() {
         updateTargetAndHighlight(updated);
       }
     } else {
-      // Incorrect keypress -> Shake / red flash, item remains, pointer does not advance
+      // Incorrect keypress -> No points, streak reset, mistake count incremented
+      streakRef.current = 0;
+      setStreak(0);
+      setMistakes(prev => prev + 1);
+
+      // Highlight the pressed wrong key in RED on virtual keyboard for 380ms
+      setWrongKey(pressedChar);
+      if (wrongKeyTimeoutRef.current) {
+        clearTimeout(wrongKeyTimeoutRef.current);
+      }
+      wrongKeyTimeoutRef.current = setTimeout(() => {
+        setWrongKey(null);
+      }, 380);
+
       triggerHaptic('error');
       setErrorFlash(true);
       setTimeout(() => setErrorFlash(false), 240);
@@ -446,6 +563,8 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (gameStateRef.current !== 'PLAYING') return;
+      // Prevent repeated trigger on key hold
+      if (e.repeat) return;
 
       if (e.key === 'Backspace') {
         e.preventDefault();
@@ -483,6 +602,20 @@ export default function App() {
   const startGame = () => {
     setErrorFlash(false);
     setActiveHighlightKey(null);
+    setWrongKey(null);
+    if (wrongKeyTimeoutRef.current) clearTimeout(wrongKeyTimeoutRef.current);
+
+    // Reset round metrics
+    setScore(0);
+    setMistakes(0);
+    setStreak(0);
+    streakRef.current = 0;
+    correctHitsRef.current = [];
+    smoothedCpmRef.current = 0;
+    setCpm(0);
+    gameStartTimeRef.current = performance.now();
+    lastCpmUpdateRef.current = performance.now();
+
     setGameState('PLAYING');
 
     const tier = getProgressionTier();
@@ -497,6 +630,28 @@ export default function App() {
     updateTargetAndHighlight(initialList);
     lastSpawnTimeRef.current = performance.now();
   };
+
+  // Helper to determine styling for any keyboard key
+  const getKeyClasses = (char: string, baseClass: string) => {
+    const isWrong = wrongKey !== null && (wrongKey === char || normalizeArabic(wrongKey) === normalizeArabic(char));
+    const isHighlight = activeHighlightKey === char || (activeHighlightKey && normalizeArabic(activeHighlightKey) === normalizeArabic(char));
+    const isPressed = pressedKey === char;
+
+    if (isWrong) {
+      // Intense Red Glow for wrong key pressed
+      return 'bg-[#DC2626] text-white ring-4 ring-red-400 shadow-[0_0_24px_rgba(239,68,68,1),inset_0_0_10px_rgba(255,255,255,0.4)] scale-105 z-20 transition-all duration-75 animate-pulse';
+    }
+    if (isHighlight) {
+      // Gold/Amber Highlight for expected target key
+      return 'bg-[#D69A32] text-white ring-2 ring-amber-300 shadow-lg shadow-amber-500/50 scale-105 z-10 transition-colors duration-75';
+    }
+    if (isPressed) {
+      return 'bg-[#3b5160] text-white scale-95 transition-all duration-75';
+    }
+    return baseClass;
+  };
+
+  const currentTier = getProgressionTier();
 
   return (
     <div className="relative w-full h-screen overflow-hidden bg-[#F6F7F5] select-none font-sans flex flex-col justify-between">
@@ -518,12 +673,56 @@ export default function App() {
       {/* GAME OVER SCREEN */}
       {gameState === 'GAME_OVER' && (
         <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-[#183B4E]/95 backdrop-blur-sm text-white p-6">
-          <div className="text-3xl font-bold text-[#C44747] mb-2 tracking-wide">
+          <div className="text-3xl font-bold text-[#C44747] mb-1 tracking-wide">
             Game Over
           </div>
-          <div className="text-xl font-medium text-slate-300 mb-8" dir="rtl">
+          <div className="text-xl font-medium text-slate-300 mb-6" dir="rtl">
             انتهت اللعبة
           </div>
+
+          {/* Round Summary Stats - Shared Design Language */}
+          <div className="w-full max-w-sm grid grid-cols-3 gap-2 py-3 px-3 bg-white/10 rounded-2xl border border-white/10 mb-8 text-center backdrop-blur-md">
+            {/* Speed (Blue-Cyan) */}
+            <div className="flex flex-col items-center p-2 rounded-xl bg-sky-950/50 border border-sky-400/30">
+              <div className="flex items-center gap-1 text-[11px] text-cyan-300 font-bold uppercase tracking-wider mb-1">
+                <svg className="w-3 h-3 text-cyan-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 14l3-4" />
+                  <path d="M3.34 17a10 10 0 1 1 17.32 0" />
+                </svg>
+                Speed
+              </div>
+              <div className="text-2xl font-black font-mono text-cyan-300">{cpm}</div>
+              <div className="text-[10px] text-cyan-400/80 font-bold">CPM</div>
+            </div>
+
+            {/* Mistakes (Red) */}
+            <div className="flex flex-col items-center p-2 rounded-xl bg-rose-950/50 border border-rose-400/30">
+              <div className="flex items-center gap-1 text-[11px] text-rose-300 font-bold uppercase tracking-wider mb-1">
+                <svg className="w-3 h-3 text-rose-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="15" y1="9" x2="9" y2="15" />
+                  <line x1="9" y1="9" x2="15" y2="15" />
+                </svg>
+                Errors
+              </div>
+              <div className="text-2xl font-black font-mono text-rose-300">{mistakes}</div>
+              <div className="text-[10px] text-rose-400/80 font-bold">Mistakes</div>
+            </div>
+
+            {/* Points (Purple-Gold) */}
+            <div className="flex flex-col items-center p-2 rounded-xl bg-purple-950/50 border border-amber-400/30">
+              <div className="flex items-center gap-1 text-[11px] text-amber-300 font-bold uppercase tracking-wider mb-1">
+                <svg className="w-3 h-3 text-amber-400" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 4h16v6a7 7 0 0 1-14 0V4z" />
+                  <path d="M12 17v4M8 21h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+                Points
+              </div>
+              <div className="text-2xl font-black font-mono text-amber-300">{score.toLocaleString()}</div>
+              <div className="text-[10px] text-purple-300/80 font-bold">PTS</div>
+            </div>
+          </div>
+
           <button
             onClick={startGame}
             className="px-10 py-4 bg-[#168C83] hover:bg-[#147a72] active:scale-95 text-white font-bold text-xl rounded-2xl shadow-xl transition-all duration-150 cursor-pointer"
@@ -533,7 +732,61 @@ export default function App() {
         </div>
       )}
 
-      {/* TOP / MIDDLE: MOVING ARABIC CHARACTERS & WORDS */}
+      {/* TOP STATUS HEADER BAR - COHESIVE COMPACT DESIGN */}
+      <div className="w-full h-11 sm:h-12 px-2 sm:px-3 flex items-center justify-between gap-1.5 sm:gap-2.5 bg-white/95 backdrop-blur-md border-b border-slate-200/90 z-20 shadow-xs shrink-0">
+        {/* 1. SPEED POD (Blue-Cyan Theme) */}
+        <div className="flex-1 max-w-[135px] sm:max-w-[150px] h-8 sm:h-9 px-2 sm:px-2.5 rounded-lg bg-sky-50/85 border border-sky-200/90 flex items-center justify-between gap-1 shadow-xs">
+          <div className="flex items-center gap-1 min-w-0">
+            <svg className="w-3.5 h-3.5 text-cyan-600 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 14l3-4" />
+              <path d="M3.34 17a10 10 0 1 1 17.32 0" />
+            </svg>
+            <span className="text-[10px] uppercase font-bold tracking-wider text-cyan-800 hidden xs:inline">Speed</span>
+          </div>
+          <div className="flex items-baseline gap-0.5">
+            <span className="text-base sm:text-xl font-black font-mono text-[#0284c7] tabular-nums leading-none">
+              {cpm}
+            </span>
+            <span className="text-[9px] font-bold text-cyan-600">CPM</span>
+          </div>
+        </div>
+
+        {/* 2. MISTAKES POD (Red Theme) */}
+        <div className="flex-1 max-w-[125px] sm:max-w-[140px] h-8 sm:h-9 px-2 sm:px-2.5 rounded-lg bg-rose-50/85 border border-rose-200/90 flex items-center justify-between gap-1 shadow-xs">
+          <div className="flex items-center gap-1 min-w-0">
+            <svg className="w-3.5 h-3.5 text-rose-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="15" y1="9" x2="9" y2="15" />
+              <line x1="9" y1="9" x2="15" y2="15" />
+            </svg>
+            <span className="text-[10px] uppercase font-bold tracking-wider text-rose-800 hidden xs:inline">Mistakes</span>
+          </div>
+          <div className="flex items-baseline gap-0.5">
+            <span className={`text-base sm:text-xl font-black font-mono tabular-nums leading-none ${mistakes > 0 ? 'text-rose-600' : 'text-slate-500'}`}>
+              {mistakes}
+            </span>
+          </div>
+        </div>
+
+        {/* 3. POINTS POD (Purple-Gold Theme) */}
+        <div className="flex-1 max-w-[145px] sm:max-w-[160px] h-8 sm:h-9 px-2 sm:px-2.5 rounded-lg bg-purple-50/85 border border-purple-200/90 flex items-center justify-between gap-1 shadow-xs">
+          <div className="flex items-center gap-1 min-w-0">
+            <svg className="w-3.5 h-3.5 text-amber-500 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 4h16v6a7 7 0 0 1-14 0V4z" />
+              <path d="M12 17v4M8 21h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            <span className="text-[10px] uppercase font-bold tracking-wider text-purple-800 hidden xs:inline">Points</span>
+          </div>
+          <div className="flex items-baseline gap-0.5">
+            <span className="text-base sm:text-xl font-black font-mono text-purple-800 tabular-nums leading-none">
+              {score.toLocaleString()}
+            </span>
+            <span className="text-[9px] font-bold text-amber-600">PTS</span>
+          </div>
+        </div>
+      </div>
+
+      {/* MIDDLE: MOVING ARABIC CHARACTERS & WORDS */}
       <div className="relative w-full flex-1 overflow-hidden">
         {/* Left Danger Edge / Line */}
         <div className="absolute left-0 top-0 bottom-0 w-2.5 bg-gradient-to-r from-[#C44747] to-transparent z-10 opacity-80" />
@@ -605,34 +858,29 @@ export default function App() {
         <div className="max-w-xl mx-auto flex flex-col gap-1.5">
           {/* Top Number Row: 10 keys (١ ٢ ٣ ٤ ٥ ٦ ٧ ٨ ٩ ٠) */}
           <div className="flex justify-center gap-1 w-full">
-            {GBOARD_NUMBERS.map(num => (
-              <button
-                key={num}
-                onClick={() => handleInputChar(num)}
-                className="flex-1 h-9 rounded-[7px] font-bold text-base flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1px_0_rgba(0,0,0,0.3)] bg-[#4a6374]/80 text-[#f1f5f9] hover:bg-[#577284] active:translate-y-0.5"
-              >
-                {num}
-              </button>
-            ))}
+            {GBOARD_NUMBERS.map(num => {
+              const numClass = getKeyClasses(num, 'bg-[#4a6374]/80 text-[#f1f5f9] hover:bg-[#577284]');
+              return (
+                <button
+                  key={num}
+                  onClick={() => handleInputChar(num)}
+                  className={`flex-1 h-9 rounded-[7px] font-bold text-base flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1px_0_rgba(0,0,0,0.3)] active:translate-y-0.5 ${numClass}`}
+                >
+                  {num}
+                </button>
+              );
+            })}
           </div>
 
           {/* Row 1: 11 keys (ض ص ث ق ف غ ع ه خ ح ج) */}
           <div className="flex justify-center gap-1 w-full">
             {GBOARD_ROW_1.map(item => {
-              const isHighlight = activeHighlightKey === item.char;
-              const isPressed = pressedKey === item.char;
-
+              const keyClass = getKeyClasses(item.char, 'bg-[#4a6374]/85 text-[#f1f5f9] hover:bg-[#577284]');
               return (
                 <button
                   key={item.char}
                   onClick={() => handleInputChar(item.char)}
-                  className={`relative flex-1 h-11 sm:h-12 rounded-[7px] flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)] active:translate-y-0.5 ${
-                    isPressed
-                      ? 'bg-[#3b5160] text-white scale-95'
-                      : isHighlight
-                      ? 'bg-[#D69A32] text-white ring-2 ring-amber-300 shadow-lg shadow-amber-500/50 scale-105 z-10'
-                      : 'bg-[#4a6374]/85 text-[#f1f5f9] hover:bg-[#577284]'
-                  }`}
+                  className={`relative flex-1 h-11 sm:h-12 rounded-[7px] flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)] active:translate-y-0.5 ${keyClass}`}
                 >
                   {/* Secondary Symbol Hint (Top Right) */}
                   <span className="absolute top-0.5 right-1 text-[9px] text-slate-300/80 font-mono leading-none">
@@ -650,20 +898,12 @@ export default function App() {
           {/* Row 2: 11 keys (ش س ي ب ل ا ت ن م ك ط) */}
           <div className="flex justify-center gap-1 w-full">
             {GBOARD_ROW_2.map(item => {
-              const isHighlight = activeHighlightKey === item.char;
-              const isPressed = pressedKey === item.char;
-
+              const keyClass = getKeyClasses(item.char, 'bg-[#4a6374]/85 text-[#f1f5f9] hover:bg-[#577284]');
               return (
                 <button
                   key={item.char}
                   onClick={() => handleInputChar(item.char)}
-                  className={`relative flex-1 h-11 sm:h-12 rounded-[7px] flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)] active:translate-y-0.5 ${
-                    isPressed
-                      ? 'bg-[#3b5160] text-white scale-95'
-                      : isHighlight
-                      ? 'bg-[#D69A32] text-white ring-2 ring-amber-300 shadow-lg shadow-amber-500/50 scale-105 z-10'
-                      : 'bg-[#4a6374]/85 text-[#f1f5f9] hover:bg-[#577284]'
-                  }`}
+                  className={`relative flex-1 h-11 sm:h-12 rounded-[7px] flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)] active:translate-y-0.5 ${keyClass}`}
                 >
                   {/* Secondary Symbol Hint (Top Right) */}
                   <span className="absolute top-0.5 right-1 text-[9px] text-slate-300/80 font-mono leading-none">
@@ -681,20 +921,12 @@ export default function App() {
           {/* Row 3: 10 letter keys (ذ ء ؤ ر ى ة و ز ظ د) + Backspace Key */}
           <div className="flex justify-center gap-1 w-full">
             {GBOARD_ROW_3.map(item => {
-              const isHighlight = activeHighlightKey === item.char;
-              const isPressed = pressedKey === item.char;
-
+              const keyClass = getKeyClasses(item.char, 'bg-[#4a6374]/85 text-[#f1f5f9] hover:bg-[#577284]');
               return (
                 <button
                   key={item.char}
                   onClick={() => handleInputChar(item.char)}
-                  className={`relative flex-1 h-11 sm:h-12 rounded-[7px] flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)] active:translate-y-0.5 ${
-                    isPressed
-                      ? 'bg-[#3b5160] text-white scale-95'
-                      : isHighlight
-                      ? 'bg-[#D69A32] text-white ring-2 ring-amber-300 shadow-lg shadow-amber-500/50 scale-105 z-10'
-                      : 'bg-[#4a6374]/85 text-[#f1f5f9] hover:bg-[#577284]'
-                  }`}
+                  className={`relative flex-1 h-11 sm:h-12 rounded-[7px] flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)] active:translate-y-0.5 ${keyClass}`}
                 >
                   {/* Secondary Symbol Hint (Top Right) */}
                   <span className="absolute top-0.5 right-1 text-[9px] text-slate-300/80 font-mono leading-none">
@@ -752,13 +984,10 @@ export default function App() {
             {/* Wide Spacebar with 'العربية' */}
             <button
               onClick={() => handleInputChar(' ')}
-              className={`flex-1 h-10 sm:h-11 rounded-[7px] font-medium text-sm sm:text-base flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)] active:translate-y-0.5 ${
-                pressedKey === ' '
-                  ? 'bg-[#3b5160] text-white scale-95'
-                  : activeHighlightKey === ' '
-                  ? 'bg-[#D69A32] text-white ring-2 ring-amber-300 shadow-lg shadow-amber-500/50'
-                  : 'bg-[#4a6374]/80 text-[#f1f5f9] hover:bg-[#577284]'
-              }`}
+              className={`flex-1 h-10 sm:h-11 rounded-[7px] font-medium text-sm sm:text-base flex items-center justify-center transition-all duration-75 cursor-pointer shadow-[0_1.5px_0_rgba(0,0,0,0.35)] active:translate-y-0.5 ${getKeyClasses(
+                ' ',
+                'bg-[#4a6374]/80 text-[#f1f5f9] hover:bg-[#577284]'
+              )}`}
             >
               العربية
             </button>
